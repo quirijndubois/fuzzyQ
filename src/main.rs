@@ -10,14 +10,12 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::time::Instant;
 
 struct TerminalGuard;
-
 impl TerminalGuard {
     fn new() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         Ok(Self)
     }
 }
-
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
@@ -26,32 +24,68 @@ impl Drop for TerminalGuard {
 
 struct Suggestion {
     text: String,
-    match_score: usize,
+    match_indices: Vec<usize>, // positions of matching characters
+    score: usize,
 }
 
-fn get_suggestions(search_term: &str, options: &[String]) -> Vec<Suggestion> {
+fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
+    if query.is_empty() {
+        return Some(Suggestion {
+            text: candidate.to_string(),
+            match_indices: vec![],
+            score: 0,
+        });
+    }
+
+    let query_lower = query.to_lowercase();
+    let candidate_lower = candidate.to_lowercase();
+
+    if let Some(pos) = candidate_lower.find(&query_lower) {
+        let match_indices = (pos..pos + query.len()).collect();
+        return Some(Suggestion {
+            text: candidate.to_string(),
+            match_indices,
+            score: 1000 + query.len(), // give exact matches very high score
+        });
+    }
+
+    let mut match_indices = Vec::new();
+    let mut last_pos = 0;
+    for qc in query_lower.chars() {
+        if let Some(pos) = candidate_lower[last_pos..].find(qc) {
+            let real_pos = last_pos + pos;
+            match_indices.push(real_pos);
+            last_pos = real_pos + 1;
+        } else {
+            return None; // character not found → no match
+        }
+    }
+
+    let score = if match_indices.is_empty() {
+        0
+    } else {
+        let gaps: usize = match_indices.windows(2).map(|w| w[1] - w[0] - 1).sum();
+        candidate.len() - gaps - match_indices.len()
+    };
+
+    Some(Suggestion {
+        text: candidate.to_string(),
+        match_indices,
+        score,
+    })
+}
+
+fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
     let mut suggestions: Vec<Suggestion> = options
         .iter()
-        .map(|option| {
-            let mut match_length = 0;
-            for (c1, c2) in search_term.chars().zip(option.chars()) {
-                if c1.to_ascii_lowercase() == c2.to_ascii_lowercase() {
-                    match_length += 1;
-                } else {
-                    break;
-                }
-            }
-            Suggestion {
-                text: option.clone(),
-                match_score: match_length,
-            }
-        })
+        .filter_map(|opt| fuzzy_match(query, opt))
         .collect();
 
-    suggestions.sort_by(|a, b| b.match_score.cmp(&a.match_score));
+    suggestions.sort_by(|a, b| b.score.cmp(&a.score));
     suggestions
 }
 
+// ===== Main loop =====
 fn main() -> io::Result<()> {
     let file = File::open("words.txt").expect("Could not open words.txt");
     let reader = BufReader::new(file);
@@ -60,13 +94,11 @@ fn main() -> io::Result<()> {
     let mut typed = String::new();
     let mut last_suggestion_count = 0;
     let mut stdout = io::stdout();
-
     let _guard = TerminalGuard::new()?;
 
     loop {
         if event::poll(std::time::Duration::from_millis(10))? {
             if let Event::Key(key_event) = event::read()? {
-                // Correct Ctrl+C handling
                 if key_event.modifiers.contains(KeyModifiers::CONTROL)
                     && key_event.code == KeyCode::Char('c')
                 {
@@ -78,9 +110,7 @@ fn main() -> io::Result<()> {
                     KeyCode::Backspace => {
                         typed.pop();
                     }
-                    KeyCode::Char(c) => {
-                        typed.push(c);
-                    }
+                    KeyCode::Char(c) => typed.push(c),
                     _ => {}
                 }
             }
@@ -91,7 +121,7 @@ fn main() -> io::Result<()> {
         let top_suggestions = &suggestions[..suggestions.len().min(20)];
         let delta_time_str = format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
 
-        // 1. Clear previous
+        // ===== Clear previous suggestions =====
         for _ in 0..last_suggestion_count {
             execute!(
                 stdout,
@@ -104,7 +134,7 @@ fn main() -> io::Result<()> {
             execute!(stdout, cursor::MoveUp(last_suggestion_count as u16))?;
         }
 
-        // 2. Write new
+        // ===== Draw suggestions =====
         for sug in top_suggestions {
             execute!(
                 stdout,
@@ -113,14 +143,29 @@ fn main() -> io::Result<()> {
                 Clear(ClearType::CurrentLine)
             )?;
 
-            let m_end = sug.match_score;
-            execute!(
-                stdout,
-                SetForegroundColor(Color::Green),
-                Print(&sug.text[..m_end]),
-                SetForegroundColor(Color::Reset),
-                Print(&sug.text[m_end..])
-            )?;
+            let mut last_idx = 0;
+            for &idx in &sug.match_indices {
+                if idx > last_idx {
+                    execute!(
+                        stdout,
+                        SetForegroundColor(Color::Reset),
+                        Print(&sug.text[last_idx..idx])
+                    )?;
+                }
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::Green),
+                    Print(&sug.text[idx..idx + 1])
+                )?;
+                last_idx = idx + 1;
+            }
+            if last_idx < sug.text.len() {
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::Reset),
+                    Print(&sug.text[last_idx..])
+                )?;
+            }
         }
 
         if !top_suggestions.is_empty() {
@@ -128,12 +173,13 @@ fn main() -> io::Result<()> {
         }
         last_suggestion_count = top_suggestions.len();
 
-        // 3. Header line
+        // ===== Draw header =====
         let (width, _) = terminal::size().unwrap_or((80, 24));
         execute!(
             stdout,
             cursor::MoveToColumn(0),
             Clear(ClearType::CurrentLine),
+            SetForegroundColor(Color::Reset),
             Print("Type here: "),
             Print(&typed),
             cursor::MoveToColumn(width.saturating_sub(delta_time_str.len() as u16)),
