@@ -5,6 +5,7 @@ use crossterm::{
     style::{Color, Print, SetForegroundColor},
     terminal::{self, Clear, ClearType},
 };
+
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::time::Instant;
@@ -107,11 +108,7 @@ fn clear_previous_suggestions(stdout: &mut io::Stdout, last_suggestion_count: us
     Ok(()) 
 }
 
-
-fn draw_suggestions(
-    stdout: &mut io::Stdout,
-    top_suggestions: &[Suggestion],
-) -> io::Result<()> {
+fn draw_suggestions(stdout: &mut io::Stdout, top_suggestions: &[Suggestion]) -> io::Result<()> {
     for sug in top_suggestions {
         execute!(
             stdout,
@@ -173,9 +170,6 @@ fn draw_header(
     Ok(())
 }
 
-
-
-// ===== Main loop =====
 fn main() -> io::Result<()> {
     let sample_options = read_file("words.txt");
     let mut typed = String::new();
