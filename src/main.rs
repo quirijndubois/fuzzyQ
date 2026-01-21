@@ -24,7 +24,7 @@ impl Drop for TerminalGuard {
 
 struct Suggestion {
     text: String,
-    match_indices: Vec<usize>, // positions of matching characters
+    match_indices: Vec<usize>,
     score: usize,
 }
 
@@ -85,15 +85,103 @@ fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
     suggestions
 }
 
-// ===== Main loop =====
-fn main() -> io::Result<()> {
-    let file = File::open("words.txt").expect("Could not open words.txt");
+fn read_file(path: &str) -> Vec<String> {
+    let file = File::open(path).expect("Could not open words.txt");
     let reader = BufReader::new(file);
     let sample_options: Vec<String> = reader.lines().filter_map(Result::ok).collect();
+    return sample_options;
+}
 
+fn clear_previous_suggestions(stdout: &mut io::Stdout, last_suggestion_count: usize) -> io::Result<()> {
+    for _ in 0..last_suggestion_count {
+        execute!(
+            stdout,
+            cursor::MoveDown(1),
+            cursor::MoveToColumn(0),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
+    if last_suggestion_count > 0 {
+        execute!(stdout, cursor::MoveUp(last_suggestion_count as u16))?;
+    }
+    Ok(()) 
+}
+
+
+fn draw_suggestions(
+    stdout: &mut io::Stdout,
+    top_suggestions: &[Suggestion],
+) -> io::Result<()> {
+    for sug in top_suggestions {
+        execute!(
+            stdout,
+            cursor::MoveDown(1),
+            cursor::MoveToColumn(0),
+            Clear(ClearType::CurrentLine)
+        )?;
+
+        let mut last_idx = 0;
+        for &idx in &sug.match_indices {
+            if idx > last_idx {
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::Reset),
+                    Print(&sug.text[last_idx..idx])
+                )?;
+            }
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Green),
+                Print(&sug.text[idx..idx + 1])
+            )?;
+            last_idx = idx + 1;
+        }
+        if last_idx < sug.text.len() {
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Reset),
+                Print(&sug.text[last_idx..])
+            )?;
+        }
+    }
+
+    if !top_suggestions.is_empty() {
+        execute!(stdout, cursor::MoveUp(top_suggestions.len() as u16))?;
+    }
+    Ok(())
+}
+
+fn draw_header(
+    stdout: &mut io::Stdout,
+    typed: &str,
+    delta_time_str: &str,
+) -> io::Result<()> {
+    let (width, _) = terminal::size().unwrap_or((80, 24));
+    execute!(
+        stdout,
+        cursor::MoveToColumn(0),
+        Clear(ClearType::CurrentLine),
+        SetForegroundColor(Color::Reset),
+        Print("Type here: "),
+        Print(&typed),
+        cursor::MoveToColumn(width.saturating_sub(delta_time_str.len() as u16)),
+        SetForegroundColor(Color::DarkGrey),
+        Print(&delta_time_str),
+        SetForegroundColor(Color::Reset),
+        cursor::MoveToColumn((typed.len() + 11) as u16)
+    )?;
+    Ok(())
+}
+
+
+
+// ===== Main loop =====
+fn main() -> io::Result<()> {
+    let sample_options = read_file("words.txt");
     let mut typed = String::new();
     let mut last_suggestion_count = 0;
     let mut stdout = io::stdout();
+
     let _guard = TerminalGuard::new()?;
 
     loop {
@@ -107,89 +195,27 @@ fn main() -> io::Result<()> {
 
                 match key_event.code {
                     KeyCode::Enter | KeyCode::Esc => break,
-                    KeyCode::Backspace => {
-                        typed.pop();
-                    }
-                    KeyCode::Char(c) => typed.push(c),
-                    _ => {}
+                    KeyCode::Backspace => {typed.pop();}
+                    KeyCode::Char(c) => typed.push(c), _ => {}
                 }
+
+                let start_time = Instant::now();
+                let suggestions = get_suggestions(&typed, &sample_options);
+                let top_suggestions = &suggestions[..suggestions.len().min(20)];
+                let delta_time_str = format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
+
+                // ===== Clear previous suggestions =====
+                clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
+
+                // ===== Draw suggestions =====
+                draw_suggestions(&mut stdout, top_suggestions)?;
+                last_suggestion_count = top_suggestions.len();
+
+                // ===== Draw header =====
+                draw_header(&mut stdout, &typed, &delta_time_str)?;
+                stdout.flush()?;
             }
         }
-
-        let start_time = Instant::now();
-        let suggestions = get_suggestions(&typed, &sample_options);
-        let top_suggestions = &suggestions[..suggestions.len().min(20)];
-        let delta_time_str = format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
-
-        // ===== Clear previous suggestions =====
-        for _ in 0..last_suggestion_count {
-            execute!(
-                stdout,
-                cursor::MoveDown(1),
-                cursor::MoveToColumn(0),
-                Clear(ClearType::CurrentLine)
-            )?;
-        }
-        if last_suggestion_count > 0 {
-            execute!(stdout, cursor::MoveUp(last_suggestion_count as u16))?;
-        }
-
-        // ===== Draw suggestions =====
-        for sug in top_suggestions {
-            execute!(
-                stdout,
-                cursor::MoveDown(1),
-                cursor::MoveToColumn(0),
-                Clear(ClearType::CurrentLine)
-            )?;
-
-            let mut last_idx = 0;
-            for &idx in &sug.match_indices {
-                if idx > last_idx {
-                    execute!(
-                        stdout,
-                        SetForegroundColor(Color::Reset),
-                        Print(&sug.text[last_idx..idx])
-                    )?;
-                }
-                execute!(
-                    stdout,
-                    SetForegroundColor(Color::Green),
-                    Print(&sug.text[idx..idx + 1])
-                )?;
-                last_idx = idx + 1;
-            }
-            if last_idx < sug.text.len() {
-                execute!(
-                    stdout,
-                    SetForegroundColor(Color::Reset),
-                    Print(&sug.text[last_idx..])
-                )?;
-            }
-        }
-
-        if !top_suggestions.is_empty() {
-            execute!(stdout, cursor::MoveUp(top_suggestions.len() as u16))?;
-        }
-        last_suggestion_count = top_suggestions.len();
-
-        // ===== Draw header =====
-        let (width, _) = terminal::size().unwrap_or((80, 24));
-        execute!(
-            stdout,
-            cursor::MoveToColumn(0),
-            Clear(ClearType::CurrentLine),
-            SetForegroundColor(Color::Reset),
-            Print("Type here: "),
-            Print(&typed),
-            cursor::MoveToColumn(width.saturating_sub(delta_time_str.len() as u16)),
-            SetForegroundColor(Color::DarkGrey),
-            Print(&delta_time_str),
-            SetForegroundColor(Color::Reset),
-            cursor::MoveToColumn((typed.len() + 11) as u16)
-        )?;
-
-        stdout.flush()?;
     }
 
     Ok(())
