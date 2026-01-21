@@ -11,12 +11,14 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::time::Instant;
 
 struct TerminalGuard;
+
 impl TerminalGuard {
     fn new() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         Ok(Self)
     }
 }
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
@@ -148,11 +150,7 @@ fn draw_suggestions(stdout: &mut io::Stdout, top_suggestions: &[Suggestion]) -> 
     Ok(())
 }
 
-fn draw_header(
-    stdout: &mut io::Stdout,
-    typed: &str,
-    delta_time_str: &str,
-) -> io::Result<()> {
+fn draw_header(stdout: &mut io::Stdout, typed: &str, delta_time_str: &str) -> io::Result<()> {
     let (width, _) = terminal::size().unwrap_or((80, 24));
     execute!(
         stdout,
