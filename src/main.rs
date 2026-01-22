@@ -10,6 +10,8 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::time::Instant;
 
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -29,6 +31,26 @@ struct Suggestion {
     text: String,
     match_indices: Vec<usize>,
     score: usize,
+}
+
+fn get_model() -> TextEmbedding {
+    let model = TextEmbedding::try_new(
+        InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
+    )
+    .unwrap();
+    model
+}
+
+fn get_embeddings(model: &mut TextEmbedding, documents: Vec<&str>) -> Vec<Vec<f32>> {
+    let embeddings = model.embed(documents, None).unwrap();
+    embeddings
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm_a * norm_b)
 }
 
 fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
@@ -88,6 +110,31 @@ fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
     suggestions
 }
 
+fn semantic_match(
+    candidate: &str,
+    query_embedding: &Vec<f32>,
+    candidate_embedding: &Vec<f32>,
+) -> Option<Suggestion> {
+    Some(Suggestion {
+        text: candidate.to_string(),
+        match_indices: vec![],
+        score: (cosine_similarity(query_embedding, candidate_embedding) * 1000.0) as usize,
+    })
+}
+
+fn get_semantic_suggestions(
+    option_embeddings: &[(String, Vec<f32>)],
+    query_embedding: &Vec<f32>,
+) -> Vec<Suggestion> {
+    let mut suggestions: Vec<Suggestion> = option_embeddings
+        .iter()
+        .filter_map(|(opt, emb)| semantic_match(opt, query_embedding, emb))
+        .collect();
+
+    suggestions.sort_by(|a, b| b.score.cmp(&a.score));
+    suggestions
+}
+
 fn read_file(path: &str) -> Vec<String> {
     let file = File::open(path).expect("Could not open words.txt");
     let reader = BufReader::new(file);
@@ -95,7 +142,10 @@ fn read_file(path: &str) -> Vec<String> {
     return sample_options;
 }
 
-fn clear_previous_suggestions(stdout: &mut io::Stdout, last_suggestion_count: usize) -> io::Result<()> {
+fn clear_previous_suggestions(
+    stdout: &mut io::Stdout,
+    last_suggestion_count: usize,
+) -> io::Result<()> {
     for _ in 0..last_suggestion_count {
         execute!(
             stdout,
@@ -107,7 +157,7 @@ fn clear_previous_suggestions(stdout: &mut io::Stdout, last_suggestion_count: us
     if last_suggestion_count > 0 {
         execute!(stdout, cursor::MoveUp(last_suggestion_count as u16))?;
     }
-    Ok(()) 
+    Ok(())
 }
 
 fn draw_suggestions(stdout: &mut io::Stdout, top_suggestions: &[Suggestion]) -> io::Result<()> {
@@ -168,13 +218,66 @@ fn draw_header(stdout: &mut io::Stdout, typed: &str, delta_time_str: &str) -> io
     Ok(())
 }
 
+fn generate_option_embedding_file(options: &[String], path: &str) {
+    println!("Loading embedding model...");
+    let mut model = get_model();
+    println!("Generating option embeddings...");
+    let option_embeddings =
+        get_embeddings(&mut model, options.iter().map(String::as_str).collect());
+    println!("Embeddings generated.");
+    let mut file = File::create(path).expect("Could not create embedding file");
+    for (opt, emb) in options.iter().zip(option_embeddings.iter()) {
+        let emb_str: Vec<String> = emb.iter().map(|v| v.to_string()).collect();
+        let line = format!("{}\t{}\n", opt, emb_str.join(","));
+        file.write_all(line.as_bytes())
+            .expect("Could not write to embedding file");
+    }
+    println!("Embeddings saved to {}", path);
+}
+
+fn get_option_embedding_file(path: &str) -> io::Result<Vec<(String, Vec<f32>)>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut embeddings = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let mut parts = line.splitn(2, '\t');
+        if let (Some(opt), Some(emb_str)) = (parts.next(), parts.next()) {
+            let emb: Vec<f32> = emb_str
+                .split(',')
+                .filter_map(|s| s.parse::<f32>().ok())
+                .collect();
+            embeddings.push((opt.to_string(), emb));
+        }
+    }
+    Ok(embeddings)
+}
+
 fn main() -> io::Result<()> {
-    let sample_options = read_file("words.txt");
+    let options_file_path = "words.txt";
+    let embeddings_file_path = "word_embeddings.txt";
+
+    let sample_options = read_file(options_file_path);
     let mut typed = String::new();
     let mut last_suggestion_count = 0;
     let mut stdout = io::stdout();
 
     let _guard = TerminalGuard::new()?;
+
+    let pattern = std::env::args().nth(1).unwrap_or_default();
+
+    let semantic_search = pattern == "--semantic";
+
+    if pattern == "--generate-embeddings" {
+        generate_option_embedding_file(&sample_options, embeddings_file_path);
+        return Ok(());
+    }
+
+    let embeddings = get_option_embedding_file(embeddings_file_path)?;
+    let mut model = get_model();
+
+    draw_header(&mut stdout, &typed, "0.0ms")?;
+    clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
 
     loop {
         if event::poll(std::time::Duration::from_millis(10))? {
@@ -187,14 +290,26 @@ fn main() -> io::Result<()> {
 
                 match key_event.code {
                     KeyCode::Enter | KeyCode::Esc => break,
-                    KeyCode::Backspace => {typed.pop();}
-                    KeyCode::Char(c) => typed.push(c), _ => {}
+                    KeyCode::Backspace => {
+                        typed.pop();
+                    }
+                    KeyCode::Char(c) => typed.push(c),
+                    _ => {}
                 }
 
+                let typed_embed = model.embed(&[&typed], None).unwrap();
+
                 let start_time = Instant::now();
-                let suggestions = get_suggestions(&typed, &sample_options);
+
+                let mut suggestions = get_suggestions(&typed, &sample_options);
+
+                if semantic_search {
+                    suggestions = get_semantic_suggestions(&embeddings, &typed_embed[0]);
+                }
+
                 let top_suggestions = &suggestions[..suggestions.len().min(20)];
-                let delta_time_str = format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
+                let delta_time_str =
+                    format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
 
                 // ===== Clear previous suggestions =====
                 clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
