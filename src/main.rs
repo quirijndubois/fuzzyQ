@@ -46,11 +46,21 @@ fn get_embeddings(model: &mut TextEmbedding, documents: Vec<&str>) -> Vec<Vec<f3
     embeddings
 }
 
+fn normalize_embeddings(embeddings: &mut [Vec<f32>]) {
+    for emb in embeddings.iter_mut() {
+        let norm = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in emb.iter_mut() {
+                *v /= norm;
+            }
+        }
+    }
+}
+
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    // we assume normalized vector to apply function simplification (not dividing by norms)
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let norm_a = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    dot / (norm_a * norm_b)
+    dot
 }
 
 fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
@@ -70,7 +80,7 @@ fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
         return Some(Suggestion {
             text: candidate.to_string(),
             match_indices,
-            score: 1000 + query.len(), // give exact matches very high score
+            score: 100 + query.len(), // give exact matches very high score
         });
     }
 
@@ -160,8 +170,17 @@ fn clear_previous_suggestions(
     Ok(())
 }
 
-fn draw_suggestions(stdout: &mut io::Stdout, top_suggestions: &[Suggestion]) -> io::Result<()> {
-    for sug in top_suggestions {
+fn draw_suggestions(stdout: &mut io::Stdout, suggestions: &[Suggestion]) -> io::Result<()> {
+    let longest_suggestion = suggestions
+        .iter()
+        .map(|sug| sug.text.len())
+        .max()
+        .unwrap_or(0);
+    let highest_score = suggestions.iter().map(|sug| sug.score).max().unwrap_or(1);
+    let lowest_score = suggestions.iter().map(|sug| sug.score).min().unwrap_or(0);
+    let terminal_width = terminal::size().unwrap_or((80, 24)).0 as usize;
+    let bar_width = terminal_width - longest_suggestion - 10;
+    for sug in suggestions {
         execute!(
             stdout,
             cursor::MoveDown(1),
@@ -192,10 +211,19 @@ fn draw_suggestions(stdout: &mut io::Stdout, top_suggestions: &[Suggestion]) -> 
                 Print(&sug.text[last_idx..])
             )?;
         }
+        let score_ratio = (sug.score as f32 - lowest_score as f32) / 1000 as f32;
+        let score_value_string = format!(" {}", sug.score as f32);
+        let score_bar_string = "█".repeat((score_ratio * bar_width as f32).round() as usize);
+        execute!(
+            stdout,
+            cursor::MoveToColumn(longest_suggestion as u16 + 2),
+            SetForegroundColor(Color::DarkGrey),
+            Print(score_bar_string + &score_value_string),
+        )?;
     }
 
-    if !top_suggestions.is_empty() {
-        execute!(stdout, cursor::MoveUp(top_suggestions.len() as u16))?;
+    if !suggestions.is_empty() {
+        execute!(stdout, cursor::MoveUp(suggestions.len() as u16))?;
     }
     Ok(())
 }
@@ -223,9 +251,11 @@ fn generate_option_embedding_file(options: &[String], path: &str) {
     println!("Loading embedding model...");
     let mut model = get_model();
     println!("Generating option embeddings...");
-    let option_embeddings =
+    let mut option_embeddings =
         get_embeddings(&mut model, options.iter().map(String::as_str).collect());
-    println!("Embeddings generated.");
+    println!("Normalizing embeddings...");
+    normalize_embeddings(&mut option_embeddings);
+    println!("Saving embeddings to file...");
     let mut file = File::create(path).expect("Could not create embedding file");
     for (opt, emb) in options.iter().zip(option_embeddings.iter()) {
         let emb_str: Vec<String> = emb.iter().map(|v| v.to_string()).collect();
@@ -259,20 +289,21 @@ fn main() -> io::Result<()> {
     let embeddings_file_path = "word_embeddings.txt";
 
     let sample_options = read_file(options_file_path);
-    let mut typed = String::new();
-    let mut last_suggestion_count = 0;
-    let mut stdout = io::stdout();
-
-    let _guard = TerminalGuard::new()?;
 
     let pattern = std::env::args().nth(1).unwrap_or_default();
-
-    let semantic_search = pattern == "--semantic";
 
     if pattern == "--generate-embeddings" {
         generate_option_embedding_file(&sample_options, embeddings_file_path);
         return Ok(());
     }
+
+    let semantic_search = pattern == "--semantic";
+
+    let mut typed = String::new();
+    let mut last_suggestion_count = 0;
+    let mut stdout = io::stdout();
+
+    let _guard = TerminalGuard::new()?;
 
     let mut embeddings: Option<Vec<(String, Vec<f32>)>> = None;
     let mut model: Option<TextEmbedding> = None;
@@ -309,6 +340,13 @@ fn main() -> io::Result<()> {
 
                 if semantic_search {
                     let typed_embed = model.as_mut().unwrap().embed(&[&typed], None).unwrap();
+                    let norm = typed_embed[0].iter().map(|x| x * x).sum::<f32>().sqrt();
+                    let mut typed_embed = typed_embed;
+                    if norm > 0.0 {
+                        for v in typed_embed[0].iter_mut() {
+                            *v /= norm;
+                        }
+                    }
                     suggestions =
                         get_semantic_suggestions(embeddings.as_ref().unwrap(), &typed_embed[0]);
                 }
