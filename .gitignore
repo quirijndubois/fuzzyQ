@@ -1,2 +1,4 @@
 target
 Cargo.lock
+.fastembed_cache/
+word_embeddings.txt
