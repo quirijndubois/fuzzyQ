@@ -202,18 +202,19 @@ fn draw_suggestions(stdout: &mut io::Stdout, top_suggestions: &[Suggestion]) -> 
 
 fn draw_header(stdout: &mut io::Stdout, typed: &str, delta_time_str: &str) -> io::Result<()> {
     let (width, _) = terminal::size().unwrap_or((80, 24));
+    let query_hint = "Search query: ";
     execute!(
         stdout,
         cursor::MoveToColumn(0),
         Clear(ClearType::CurrentLine),
         SetForegroundColor(Color::Reset),
-        Print("Type here: "),
+        Print(query_hint),
         Print(&typed),
         cursor::MoveToColumn(width.saturating_sub(delta_time_str.len() as u16)),
         SetForegroundColor(Color::DarkGrey),
         Print(&delta_time_str),
         SetForegroundColor(Color::Reset),
-        cursor::MoveToColumn((typed.len() + 11) as u16)
+        cursor::MoveToColumn((typed.len() + query_hint.len()) as u16)
     )?;
     Ok(())
 }
