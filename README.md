@@ -16,3 +16,14 @@ then run with:
 ```sh
 ./target/release/fuzzyQ
 ```
+
+# Semantic search
+
+After building the project you can generate the embeddings:
+```sh
+./target/release/fuzzyQ --generate-embeddings
+```
+Now you can run the executable with semantic search enabled:
+```sh
+./target/release/fuzzyQ --semantic
+```
