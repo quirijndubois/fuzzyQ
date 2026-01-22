@@ -273,8 +273,13 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let embeddings = get_option_embedding_file(embeddings_file_path)?;
-    let mut model = get_model();
+    let mut embeddings: Option<Vec<(String, Vec<f32>)>> = None;
+    let mut model: Option<TextEmbedding> = None;
+
+    if semantic_search {
+        embeddings = Some(get_option_embedding_file(embeddings_file_path)?);
+        model = Some(get_model());
+    }
 
     draw_header(&mut stdout, &typed, "0.0ms")?;
     clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
@@ -297,14 +302,14 @@ fn main() -> io::Result<()> {
                     _ => {}
                 }
 
-                let typed_embed = model.embed(&[&typed], None).unwrap();
-
                 let start_time = Instant::now();
 
                 let mut suggestions = get_suggestions(&typed, &sample_options);
 
                 if semantic_search {
-                    suggestions = get_semantic_suggestions(&embeddings, &typed_embed[0]);
+                    let typed_embed = model.as_mut().unwrap().embed(&[&typed], None).unwrap();
+                    suggestions =
+                        get_semantic_suggestions(embeddings.as_ref().unwrap(), &typed_embed[0]);
                 }
 
                 let top_suggestions = &suggestions[..suggestions.len().min(20)];
