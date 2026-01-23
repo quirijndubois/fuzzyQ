@@ -64,73 +64,66 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
-    if query.is_empty() {
+    let q = query.to_lowercase();
+    let c = candidate.to_lowercase();
+
+    let mut score: usize = 0;
+    let mut match_indices: Vec<usize> = Vec::new();
+
+    // 1. Exact match
+    if q == c {
+        score = 1000;
+        match_indices = (0..q.len()).collect();
         return Some(Suggestion {
             text: candidate.to_string(),
-            match_indices: vec![],
-            score: 0,
+            match_indices,
+            score,
         });
     }
 
-    let query_chars: Vec<char> = query.chars().collect();
-    let cand_chars: Vec<char> = candidate.chars().collect();
+    // 2. Substring match
+    if let Some(pos) = c.find(&q) {
+        score += 200;
+        score += q.len() * 10;
+        score += 100usize.saturating_sub(pos); // earlier is better
+        match_indices = (pos..pos + q.len()).collect();
+    }
 
-    let mut match_indices = Vec::new();
-    let mut score: usize = 0;
+    // 3. Prefix bonus
+    if c.starts_with(&q) {
+        score += 150;
+    }
 
-    let mut q_idx = 0;
-    let mut last_match_idx: Option<usize> = None;
+    // 4. Subsequence match (always attempt)
+    let mut last = 0;
+    let mut gaps = 0;
 
-    for (i, &c) in cand_chars.iter().enumerate() {
-        if q_idx >= query_chars.len() {
-            break;
-        }
-
-        if c.eq_ignore_ascii_case(&query_chars[q_idx]) {
-            // Base match score
-            let mut s = 10;
-
-            // Consecutive match bonus
-            if let Some(last) = last_match_idx {
-                if i == last + 1 {
-                    s += 15;
-                } else {
-                    // Gap penalty
-                    s -= (i - last - 1) as usize;
-                }
+    for qc in q.chars() {
+        if let Some(pos) = c[last..].find(qc) {
+            let real = last + pos;
+            if let Some(prev) = match_indices.last() {
+                gaps += real.saturating_sub(*prev + 1);
             }
-
-            // Word boundary / camelCase bonus
-            if i == 0
-                || !cand_chars[i - 1].is_alphanumeric()
-                || (cand_chars[i - 1].is_lowercase() && c.is_uppercase())
-            {
-                s += 20;
-            }
-
-            // Case-sensitive bonus
-            if c == query_chars[q_idx] {
-                s += 5;
-            }
-
-            // Earlier match bonus
-            s += (cand_chars.len() - i) as usize / 10;
-
-            score += s;
-            match_indices.push(i);
-            last_match_idx = Some(i);
-            q_idx += 1;
+            match_indices.push(real);
+            last = real + 1;
         }
     }
 
-    // Did we match the whole query?
-    if q_idx != query_chars.len() {
-        return None;
+    let matched = match_indices.len();
+    if matched > 0 {
+        score += matched * 10;
+        score += 50usize.saturating_sub(gaps);
     }
 
-    // Exact substring bonus
-    if candidate.to_lowercase().contains(&query.to_lowercase()) {
-        score += 100;
+    // 5. Edit distance bonus (handles "heyp" -> "hey")
+    let dist = levenshtein(&q, &c);
+    if dist <= 2 {
+        score += (3 - dist) * 30;
+    }
+
+    // 6. clamp score to 0 - 1000
+    if score > 1000 {
+        score = 1000;
     }
 
     Some(Suggestion {
@@ -138,6 +131,27 @@ fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
         match_indices,
         score,
     })
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let mut costs: Vec<usize> = (0..=b.len()).collect();
+
+    for (i, ca) in a.chars().enumerate() {
+        let mut last = i;
+        costs[0] = i + 1;
+
+        for (j, cb) in b.chars().enumerate() {
+            let new = if ca == cb {
+                last
+            } else {
+                1 + last.min(costs[j]).min(costs[j + 1])
+            };
+            last = costs[j + 1];
+            costs[j + 1] = new;
+        }
+    }
+
+    costs[b.len()]
 }
 
 fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
