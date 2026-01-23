@@ -11,7 +11,7 @@ pub fn normalize_embeddings(embeddings: &mut [Vec<f32>]) {
     }
 }
 
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     // we assume normalized vector to apply function simplification (not dividing by norms)
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     dot
@@ -106,4 +106,18 @@ fn levenshtein(a: &str, b: &str) -> usize {
     }
 
     costs[b.len()]
+}
+
+pub fn semantic_match(
+    query: &str,
+    candidate: &str,
+    query_embedding: &Vec<f32>,
+    candidate_embedding: &Vec<f32>,
+) -> Option<Suggestion> {
+    let f_match = fuzzy_match(query, candidate);
+    Some(Suggestion {
+        text: candidate.to_string(),
+        match_indices: f_match.map_or(vec![], |m| m.match_indices),
+        score: (cosine_similarity(query_embedding, candidate_embedding) * 1000.0) as usize,
+    })
 }

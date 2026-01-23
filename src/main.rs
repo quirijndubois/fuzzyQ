@@ -1,6 +1,7 @@
 mod algorithms;
 mod draw;
-mod embedding;
+mod embedder;
+mod file_manager;
 mod structs;
 
 use crate::structs::Suggestion;
@@ -8,13 +9,11 @@ use crate::structs::terminal_guard::TerminalGuard;
 
 use fastembed::TextEmbedding;
 
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use std::io::{self, Write};
 use std::time::Instant;
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-
-fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
+fn get_fuzzy_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
     let mut suggestions: Vec<Suggestion> = options
         .iter()
         .filter_map(|opt| algorithms::fuzzy_match(query, opt))
@@ -24,21 +23,6 @@ fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
     suggestions
 }
 
-fn semantic_match(
-    query: &str,
-    candidate: &str,
-    query_embedding: &Vec<f32>,
-    candidate_embedding: &Vec<f32>,
-) -> Option<Suggestion> {
-    let f_match = algorithms::fuzzy_match(query, candidate);
-    Some(Suggestion {
-        text: candidate.to_string(),
-        match_indices: f_match.map_or(vec![], |m| m.match_indices),
-        score: (algorithms::cosine_similarity(query_embedding, candidate_embedding) * 1000.0)
-            as usize,
-    })
-}
-
 fn get_semantic_suggestions(
     query: &str,
     option_embeddings: &[(String, Vec<f32>)],
@@ -46,30 +30,24 @@ fn get_semantic_suggestions(
 ) -> Vec<Suggestion> {
     let mut suggestions: Vec<Suggestion> = option_embeddings
         .iter()
-        .filter_map(|(opt, emb)| semantic_match(query, opt, query_embedding, emb))
+        .filter_map(|(opt, emb)| algorithms::semantic_match(query, opt, query_embedding, emb))
         .collect();
 
     suggestions.sort_by(|a, b| b.score.cmp(&a.score));
     suggestions
 }
 
-fn read_file(path: &str) -> Vec<String> {
-    let file = File::open(path).expect("Could not open words.txt");
-    let reader = BufReader::new(file);
-    let sample_options: Vec<String> = reader.lines().filter_map(Result::ok).collect();
-    return sample_options;
-}
-
 fn main() -> io::Result<()> {
     let options_file_path = "words.txt";
     let embeddings_file_path = "word_embeddings.txt";
 
-    let sample_options = read_file(options_file_path);
+    let sample_options = file_manager::read_file(options_file_path);
 
     let pattern = std::env::args().nth(1).unwrap_or_default();
 
     if pattern == "--generate-embeddings" {
-        embedding::generate_embeddings_file(&sample_options, embeddings_file_path);
+        let option_embeddings = embedder::generate_embeddings_file(&sample_options);
+        file_manager::write_embeddings(&sample_options, option_embeddings, embeddings_file_path);
         return Ok(());
     }
 
@@ -85,11 +63,11 @@ fn main() -> io::Result<()> {
     let mut model: Option<TextEmbedding> = None;
 
     if semantic_search {
-        embeddings = Some(embedding::get_embeddings_file(embeddings_file_path)?);
-        model = Some(embedding::get_model());
+        embeddings = Some(file_manager::read_embeddings_file(embeddings_file_path)?);
+        model = Some(embedder::get_model());
     }
 
-    draw::draw_header(&mut stdout, &typed, "0.0ms")?;
+    draw::draw_header(&mut stdout, &typed, 0 as f64)?;
     draw::clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
 
     loop {
@@ -112,7 +90,7 @@ fn main() -> io::Result<()> {
 
                 let start_time = Instant::now();
 
-                let mut suggestions = get_suggestions(&typed, &sample_options);
+                let mut suggestions = get_fuzzy_suggestions(&typed, &sample_options);
 
                 if semantic_search {
                     let typed_embed = model.as_mut().unwrap().embed(&[&typed], None).unwrap();
@@ -124,12 +102,9 @@ fn main() -> io::Result<()> {
                 }
 
                 let top_suggestions = &suggestions[..suggestions.len().min(20)];
-                let delta_time_str =
-                    format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
-
                 draw::clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
                 draw::draw_suggestions(&mut stdout, top_suggestions)?;
-                draw::draw_header(&mut stdout, &typed, &delta_time_str)?;
+                draw::draw_header(&mut stdout, &typed, start_time.elapsed().as_secs_f64())?;
                 stdout.flush()?;
 
                 last_suggestion_count = top_suggestions.len();

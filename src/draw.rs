@@ -83,7 +83,8 @@ pub fn draw_suggestions(stdout: &mut io::Stdout, suggestions: &[Suggestion]) -> 
     Ok(())
 }
 
-pub fn draw_header(stdout: &mut io::Stdout, typed: &str, delta_time_str: &str) -> io::Result<()> {
+pub fn draw_header(stdout: &mut io::Stdout, typed: &str, delta_time: f64) -> io::Result<()> {
+    let delta_time_str = format!("{:.2}ms", delta_time * 1000.0);
     let (width, _) = terminal::size().unwrap_or((80, 24));
     let query_hint = "Search query: ";
     execute!(
