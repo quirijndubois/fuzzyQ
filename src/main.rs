@@ -41,7 +41,7 @@ fn get_model() -> TextEmbedding {
     model
 }
 
-fn get_embeddings(model: &mut TextEmbedding, documents: Vec<&str>) -> Vec<Vec<f32>> {
+fn generate_embeddings(model: &mut TextEmbedding, documents: Vec<&str>) -> Vec<Vec<f32>> {
     let embeddings = model.embed(documents, None).unwrap();
     embeddings
 }
@@ -247,12 +247,12 @@ fn draw_header(stdout: &mut io::Stdout, typed: &str, delta_time_str: &str) -> io
     Ok(())
 }
 
-fn generate_option_embedding_file(options: &[String], path: &str) {
+fn generate_embedding_file(options: &[String], path: &str) {
     println!("Loading embedding model...");
     let mut model = get_model();
     println!("Generating option embeddings...");
     let mut option_embeddings =
-        get_embeddings(&mut model, options.iter().map(String::as_str).collect());
+        generate_embeddings(&mut model, options.iter().map(String::as_str).collect());
     println!("Normalizing embeddings...");
     normalize_embeddings(&mut option_embeddings);
     println!("Saving embeddings to file...");
@@ -266,7 +266,7 @@ fn generate_option_embedding_file(options: &[String], path: &str) {
     println!("Embeddings saved to {}", path);
 }
 
-fn get_option_embedding_file(path: &str) -> io::Result<Vec<(String, Vec<f32>)>> {
+fn get_embeddings_file(path: &str) -> io::Result<Vec<(String, Vec<f32>)>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut embeddings = Vec::new();
@@ -293,7 +293,7 @@ fn main() -> io::Result<()> {
     let pattern = std::env::args().nth(1).unwrap_or_default();
 
     if pattern == "--generate-embeddings" {
-        generate_option_embedding_file(&sample_options, embeddings_file_path);
+        generate_embedding_file(&sample_options, embeddings_file_path);
         return Ok(());
     }
 
@@ -309,7 +309,7 @@ fn main() -> io::Result<()> {
     let mut model: Option<TextEmbedding> = None;
 
     if semantic_search {
-        embeddings = Some(get_option_embedding_file(embeddings_file_path)?);
+        embeddings = Some(get_embeddings_file(embeddings_file_path)?);
         model = Some(get_model());
     }
 
@@ -368,6 +368,5 @@ fn main() -> io::Result<()> {
             }
         }
     }
-
     Ok(())
 }
