@@ -72,36 +72,66 @@ fn fuzzy_match(query: &str, candidate: &str) -> Option<Suggestion> {
         });
     }
 
-    let query_lower = query.to_lowercase();
-    let candidate_lower = candidate.to_lowercase();
-
-    if let Some(pos) = candidate_lower.find(&query_lower) {
-        let match_indices = (pos..pos + query.len()).collect();
-        return Some(Suggestion {
-            text: candidate.to_string(),
-            match_indices,
-            score: 100 + query.len(), // give exact matches very high score
-        });
-    }
+    let query_chars: Vec<char> = query.chars().collect();
+    let cand_chars: Vec<char> = candidate.chars().collect();
 
     let mut match_indices = Vec::new();
-    let mut last_pos = 0;
-    for qc in query_lower.chars() {
-        if let Some(pos) = candidate_lower[last_pos..].find(qc) {
-            let real_pos = last_pos + pos;
-            match_indices.push(real_pos);
-            last_pos = real_pos + 1;
-        } else {
-            return None; // character not found → no match
+    let mut score: usize = 0;
+
+    let mut q_idx = 0;
+    let mut last_match_idx: Option<usize> = None;
+
+    for (i, &c) in cand_chars.iter().enumerate() {
+        if q_idx >= query_chars.len() {
+            break;
+        }
+
+        if c.eq_ignore_ascii_case(&query_chars[q_idx]) {
+            // Base match score
+            let mut s = 10;
+
+            // Consecutive match bonus
+            if let Some(last) = last_match_idx {
+                if i == last + 1 {
+                    s += 15;
+                } else {
+                    // Gap penalty
+                    s -= (i - last - 1) as usize;
+                }
+            }
+
+            // Word boundary / camelCase bonus
+            if i == 0
+                || !cand_chars[i - 1].is_alphanumeric()
+                || (cand_chars[i - 1].is_lowercase() && c.is_uppercase())
+            {
+                s += 20;
+            }
+
+            // Case-sensitive bonus
+            if c == query_chars[q_idx] {
+                s += 5;
+            }
+
+            // Earlier match bonus
+            s += (cand_chars.len() - i) as usize / 10;
+
+            score += s;
+            match_indices.push(i);
+            last_match_idx = Some(i);
+            q_idx += 1;
         }
     }
 
-    let score = if match_indices.is_empty() {
-        0
-    } else {
-        let gaps: usize = match_indices.windows(2).map(|w| w[1] - w[0] - 1).sum();
-        candidate.len() - gaps - match_indices.len()
-    };
+    // Did we match the whole query?
+    if q_idx != query_chars.len() {
+        return None;
+    }
+
+    // Exact substring bonus
+    if candidate.to_lowercase().contains(&query.to_lowercase()) {
+        score += 100;
+    }
 
     Some(Suggestion {
         text: candidate.to_string(),
