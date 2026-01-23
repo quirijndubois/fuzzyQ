@@ -121,24 +121,27 @@ fn get_suggestions(query: &str, options: &[String]) -> Vec<Suggestion> {
 }
 
 fn semantic_match(
+    query: &str,
     candidate: &str,
     query_embedding: &Vec<f32>,
     candidate_embedding: &Vec<f32>,
 ) -> Option<Suggestion> {
+    let f_match = fuzzy_match(query, candidate);
     Some(Suggestion {
         text: candidate.to_string(),
-        match_indices: vec![],
+        match_indices: f_match.map_or(vec![], |m| m.match_indices),
         score: (cosine_similarity(query_embedding, candidate_embedding) * 1000.0) as usize,
     })
 }
 
 fn get_semantic_suggestions(
+    query: &str,
     option_embeddings: &[(String, Vec<f32>)],
     query_embedding: &Vec<f32>,
 ) -> Vec<Suggestion> {
     let mut suggestions: Vec<Suggestion> = option_embeddings
         .iter()
-        .filter_map(|(opt, emb)| semantic_match(opt, query_embedding, emb))
+        .filter_map(|(opt, emb)| semantic_match(query, opt, query_embedding, emb))
         .collect();
 
     suggestions.sort_by(|a, b| b.score.cmp(&a.score));
@@ -176,7 +179,6 @@ fn draw_suggestions(stdout: &mut io::Stdout, suggestions: &[Suggestion]) -> io::
         .map(|sug| sug.text.len())
         .max()
         .unwrap_or(0);
-    let highest_score = suggestions.iter().map(|sug| sug.score).max().unwrap_or(1);
     let lowest_score = suggestions.iter().map(|sug| sug.score).min().unwrap_or(0);
     let terminal_width = terminal::size().unwrap_or((80, 24)).0 as usize;
     let bar_width = terminal_width - longest_suggestion - 10;
@@ -340,31 +342,23 @@ fn main() -> io::Result<()> {
 
                 if semantic_search {
                     let typed_embed = model.as_mut().unwrap().embed(&[&typed], None).unwrap();
-                    let norm = typed_embed[0].iter().map(|x| x * x).sum::<f32>().sqrt();
-                    let mut typed_embed = typed_embed;
-                    if norm > 0.0 {
-                        for v in typed_embed[0].iter_mut() {
-                            *v /= norm;
-                        }
-                    }
-                    suggestions =
-                        get_semantic_suggestions(embeddings.as_ref().unwrap(), &typed_embed[0]);
+                    suggestions = get_semantic_suggestions(
+                        &typed,
+                        embeddings.as_ref().unwrap(),
+                        &typed_embed[0],
+                    );
                 }
 
                 let top_suggestions = &suggestions[..suggestions.len().min(20)];
                 let delta_time_str =
                     format!("{:.2}ms", start_time.elapsed().as_secs_f64() * 1000.0);
 
-                // ===== Clear previous suggestions =====
                 clear_previous_suggestions(&mut stdout, last_suggestion_count)?;
-
-                // ===== Draw suggestions =====
                 draw_suggestions(&mut stdout, top_suggestions)?;
-                last_suggestion_count = top_suggestions.len();
-
-                // ===== Draw header =====
                 draw_header(&mut stdout, &typed, &delta_time_str)?;
                 stdout.flush()?;
+
+                last_suggestion_count = top_suggestions.len();
             }
         }
     }
